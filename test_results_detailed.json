@@ -1,0 +1,128 @@
+{
+  "summary": {
+    "passed": 4,
+    "failed": 1
+  },
+  "results": [
+    {
+      "test": "Búsqueda por Laboratorio",
+      "passed": true,
+      "validations": [
+        [
+          "Intent Check",
+          true,
+          "Expected SEARCH, got SEARCH"
+        ],
+        [
+          "Entities Check",
+          true,
+          null
+        ],
+        [
+          "Main Entity Exact",
+          true,
+          "Expected 'holliday', got 'holliday'"
+        ],
+        [
+          "Search Content",
+          true,
+          null
+        ],
+        [
+          "Has Results",
+          true,
+          "Expected True, got True"
+        ]
+      ]
+    },
+    {
+      "test": "Búsqueda por Producto con Filtro",
+      "passed": true,
+      "validations": [
+        [
+          "Intent Check",
+          true,
+          "Expected SEARCH, got SEARCH"
+        ],
+        [
+          "Entities Check",
+          true,
+          null
+        ],
+        [
+          "Main Entity Partial",
+          true,
+          "Expected 'apoquel' in 'apoquel 16 mg x 20 comp'"
+        ],
+        [
+          "Filters Check",
+          true,
+          "Missing filters: []"
+        ],
+        [
+          "Has Results",
+          true,
+          "Expected True, got True"
+        ]
+      ]
+    },
+    {
+      "test": "Multi-Entidad: Lab + Acción",
+      "passed": false,
+      "validations": [
+        [
+          "Intent Check",
+          true,
+          "Expected SEARCH, got SEARCH"
+        ],
+        [
+          "Entities Check",
+          false,
+          "Missing entities: ['ACCION:antiparasitarios']"
+        ],
+        [
+          "Has Results",
+          true,
+          "Expected True, got True"
+        ]
+      ]
+    },
+    {
+      "test": "Smalltalk: Saludo",
+      "passed": true,
+      "validations": [
+        [
+          "Intent Check",
+          true,
+          "Expected SMALLTALK, got SMALLTALK"
+        ],
+        [
+          "Has Results",
+          true,
+          "Expected False, got False"
+        ]
+      ]
+    },
+    {
+      "test": "Corrección de Typo (atibiotico)",
+      "passed": true,
+      "validations": [
+        [
+          "Intent Check",
+          true,
+          "Expected SEARCH, got SEARCH"
+        ],
+        [
+          "Main Entity Exact",
+          true,
+          "Expected 'antibiotico', got 'antibiotico'"
+        ],
+        [
+          "Has Results",
+          true,
+          "Expected True, got True"
+        ]
+      ]
+    }
+  ]
+}

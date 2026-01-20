@@ -1,0 +1,11 @@
+python-dotenv==1.0.0
+sqlalchemy==2.0.23
+requests==2.31.0
+pandas==2.1.4
+langchain             # El esqueleto
+langchain-community   # <--- AGREGA ESTO (Aquí vive FastEmbed)
+langchain-openai      # El driver para RunPod/OpenAI
+psycopg2-binary
+fastembed
+fastapi
+uvicorn
