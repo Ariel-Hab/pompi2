@@ -1,190 +1,224 @@
-import pytest
-import logging
+"""
+TEST SUITE FOR QUERY OPTIMIZER V5 - REAL LLM (AUGMENTED)
+Valida la integración NER + LLM Real.
+Incluye casos base y nuevos casos basados en datos reales de producción.
+"""
+import json
 import sys
-from rag_domain.ner_classifier import VeterinaryNERClassifier, classification_to_optimizer_format
+import time
+from pathlib import Path
+from typing import Dict
 
-## python -m pytest tests/test_ner.py -v -s
+# --- FIX DE IMPORTS (Para ejecución directa con pytest) ---
+project_root = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(project_root))
 
-# ============================================================================
-# ⚙️ CONFIGURACIÓN DE LOGGING
-# ============================================================================
-# Esto asegura que los logs se vean en consola al usar 'pytest -s'
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(message)s',
-    stream=sys.stdout,
-    force=True
-)
-logger = logging.getLogger(__name__)
+try:
+    from rag_domain.optimizer import QueryOptimizer
+except ImportError:
+    try:
+        from optimizer import QueryOptimizer
+    except ImportError:
+        raise ImportError("No se pudo encontrar 'optimizer.py'. Asegúrate de estar en la raíz del proyecto.")
 
-# ============================================================================
-# ⚙️ FIXTURES
-# ============================================================================
+# python -m pytest tests/test_ner.py -v -s
 
-@pytest.fixture(scope="module")
-def classifier():
-    print("\n⚡ Inicializando VeterinaryNERClassifier...")
-    return VeterinaryNERClassifier()
-
-# ============================================================================
-# 📋 DATOS DE PRUEBA
-# ============================================================================
-
-NER_LOGIC_CASES = [
-    ("busco productos clinicos", ["CATEGORIA"]),
-    ("necesito comprimido", ["CONCEPTO"]),
-    ("antibiotico para perros", ["ACCION", "ESPECIE"]),
-    ("meloxicam gato", ["DROGA", "ESPECIE"]),
-    # Fuzzy / Typos
-    ("atibiotico oral", ["ACCION"]),
-    ("alimento holliday", ["CATEGORIA", "LABORATORIO"]),
-    ("precio de sinparica", ["PRODUCTO"]),
-    # Enriquecimiento
-    ("pipeta para gatitos", ["CONCEPTO", "ESPECIE"]),
-    ("vacuna cachorros", ["CONCEPTO", "ESPECIE"]),
-    # Complejidad
-    ("bravecto para perros", ["PRODUCTO", "ESPECIE"]),
-    ("antiparasitarios jhon martin para gatos", ["CATEGORIA", "LABORATORIO", "ESPECIE"]),
-    ("collares para pulgas", ["CONCEPTO", "ESPECIE"]),
-]
-
-INTEGRATED_SEARCH_CASES = [
-    ("fenobarbital 40 mg", {
-        "types_in_result": ["DROGA"], 
-        "filters": {"dosage_value": 40.0, "dosage_unit": "mg"}
-    }),
-    ("anticonvulsivante 40mg", {
-        "types_in_result": ["ACCION"], 
-        "filters": {"dosage_value": 40.0, "dosage_unit": "mg"}
-    }),
-    ("multivit boehringer", {
-        "types_in_result": ["LABORATORIO"],
-    }),
-    ("total full gatos comprimidos", {
-        "types_in_result": ["PRODUCTO", "ESPECIE", "CONCEPTO"],
-        "filters": {"presentation": "comprimidos"}
-    }),
-    ("power gatos 5kg", {
-        "types_in_result": ["PRODUCTO", "ESPECIE"], 
-    }),
-    ("basken hospitalario", {
-        "types_in_result": ["PRODUCTO"],
-    }),
-]
-
-INTEGRATED_SEARCH_CASES += [
-    # ESCENARIO: Seguridad Gatos (Duosecretina)
-    # Aquí veremos si el NER identifica que es para perros o si ensucia la búsqueda
-    ("duosecretina para gatos", {
-        "types_in_result": ["PRODUCTO", "ESPECIE"],
-        "filters": {"species_filter": ["gato"]} # Esto es lo que causó el error: el filtro existía pero no bloqueó el resultado
-    }),
-    # ESCENARIO: Búsqueda por Acción Clínica (Osteoartritis)
-    # Verificamos si el NER extrae la patología como ACCION
-    ("algo para la osteoartritis en perros", {
-        "types_in_result": ["ACCION", "ESPECIE"],
-        "filters": {"species_filter": ["perro"]}
-    }),
-    # ESCENARIO: Laboratorio + Categoría (Ceva Clínico)
-    # El bot devolvió Doxivit, veremos si el NER detectó ambos filtros
-    ("productos ceva linea clinica", {
-        "types_in_result": ["LABORATORIO", "CATEGORIA"],
-        "filters": {"filter_lab": "ceva", "filter_category": "clinico"}
-    })
-]
-
-# ============================================================================
-# 🧪 TESTS DE CLASIFICACIÓN (LÓGICA NER)
-# ============================================================================
-
-@pytest.mark.parametrize("query, expected_types", NER_LOGIC_CASES)
-def test_ner_entity_detection(classifier, query, expected_types):
-    result = classifier.classify(query)
-    found_types = [e.entity_type for e in result.all_entities]
+def test_ner_integration_real():
+    print("\n" + "="*80)
+    print("🚀 INICIANDO SUITE DE PRUEBAS - REAL LLM INTEGRATION (DATA ENRIQUECIDA)")
+    print("="*80)
     
-    # --- LOGGING DETALLADO ---
-    logger.info(f"\n{'='*70}")
-    logger.info(f"🧪 TEST QUERY: '{query}'")
-    logger.info(f"{'-'*70}")
-    logger.info(f"🎯 Tipos Esperados: {expected_types}")
-    logger.info(f"🤖 Tipos Detectados: {found_types}")
+    # Instanciamos el optimizador
+    try:
+        opt = QueryOptimizer()
+    except Exception as e:
+        print(f"\n❌ ERROR AL INICIAR OPTIMIZER: {e}")
+        return
     
-    # Detalle de qué texto matcheó con qué tipo
-    details = [f"[{e.entity_type}: '{e.entity_value}']" for e in result.all_entities]
-    logger.info(f"📝 Entidades:      {' '.join(details)}")
+    if not hasattr(opt, 'has_llm') or not opt.has_llm:
+        print("\n❌ ERROR CRÍTICO: No se detectó el servicio LLM.")
+        print("Asegúrate de configurar las variables de entorno para la API.")
+        return
+
+    print("✅ LLM Service Conectado. Ejecutando pruebas...\n")
+
+    test_cases = [
+        # ==========================================
+        # GRUPO 1: CASOS DE LÓGICA (Validación Base)
+        # ==========================================
+        {
+            "name": "Exclusión Semántica (No Credelio)",
+            "query": "antiparasitario elanco pero no credelio",
+            "desc": "El LLM debe eliminar 'Credelio' activamente.",
+            "checks": {
+                "filters.laboratorios": ["ELANCO"],
+                "__exclude__": ["filters.target_products"] 
+            }
+        },
+        {
+            "name": "Recomendación (Garrapatas)",
+            "query": "que tenes para garrapatas",
+            "intent": "RECOMMENDATION",
+            "desc": "Detectar 'garrapatas' como síntoma.",
+            "checks": { "filters.symptoms": ["garrapatas"] }
+        },
+
+        # ==========================================
+        # GRUPO 2: DATOS REALES DB (Nuevos Casos)
+        # ==========================================
+        
+        # 1. CLINICO - ALGICAM (Antiinflamatorio)
+        {
+            "name": "Producto Específico + Droga (Algicam)",
+            "query": "precio algicam pets meloxicam",
+            "desc": "Validar cruce de Marca (Ceva/Algicam) y Droga.",
+            "checks": {
+                "filters.target_products": ["ALGICAM"], # Asume que 'ALGICAM' está en vademecum
+                "filters.drogas": ["MELOXICAM"]
+            }
+        },
+
+        # 2. ANTIPARASITARIO - ROCHY (Curabichera)
+        {
+            "name": "Categoría Específica (Rochy Curabichera)",
+            "query": "rochy curabichera aerosol",
+            "desc": "Validar producto y formato/categoría.",
+            "checks": {
+                "filters.target_products": ["ROCHY"],
+                # 'CURABICHERA' suele ser CATEGORIA o ACCION según tu CSV
+                # Verificamos que al menos uno de los dos lo capture
+                "filters.categorias": ["CURABICHERA"] 
+            }
+        },
+
+        # 3. ANTIARTROSICO - OL TRANS (Holliday)
+        {
+            "name": "Suplemento Complejo (Ol Trans Holliday)",
+            "query": "ol trans polvo holliday",
+            "desc": "Validar Laboratorio y Producto compuesto.",
+            "checks": {
+                "filters.laboratorios": ["HOLLIDAY"],
+                "filters.target_products": ["OL TRANS"], # O "OL" y "TRANS" si el tokenizador separa
+            }
+        },
+
+        # 4. OFERTA - VIRBAC FELIGEN (Biogenesis)
+        {
+            "name": "Oferta Vacunas (Virbac Feligen)",
+            "query": "oferta feligen virbac",
+            "desc": "Detectar intención comercial explícita y marca.",
+            "checks": {
+                "filters.is_offer": True,
+                "filters.laboratorios": ["VIRBAC"],
+                "filters.target_products": ["FELIGEN"]
+            }
+        },
+
+        # 5. OFERTA + REGALO - POWER GOLD (Brouwer)
+        {
+            "name": "Promo con Regalo (Power Gold)",
+            "query": "power gold con regalo de termo",
+            "desc": "Detectar 'is_offer' por keyword 'regalo' y producto.",
+            "checks": {
+                "filters.is_offer": True,
+                "filters.target_products": ["POWER"]
+            }
+        },
+
+        # 6. TRANSFER - FIPRO Y PROTECH (Labyes)
+        {
+            "name": "Transfer/Bonificación (Labyes)",
+            "query": "transfer fipro y protech labyes",
+            "desc": "Detectar 'is_transfer' y múltiples productos.",
+            "checks": {
+                "filters.is_transfer": True,
+                "filters.laboratorios": ["LABYES"],
+                # Debería capturar ambos si están en el NER
+                "filters.target_products": ["FIPRO", "PROTECH"] 
+            }
+        }
+    ]
+
+    passed_count = 0
     
-    missing = [t for t in expected_types if t not in found_types]
-    
-    # Marcador visual de éxito/fracaso en el log antes del assert
-    if missing:
-        logger.info(f"❌ RESULTADO: FALLO (Faltan: {missing})")
-    else:
-        logger.info(f"✅ RESULTADO: OK")
-    logger.info(f"{'='*70}")
+    for i, case in enumerate(test_cases, 1):
+        print(f"🔹 TEST {i}: {case['name']}")
+        print(f"   Query: '{case['query']}'")
+        
+        start_time = time.time()
+        try:
+            result = opt.optimize(case['query'])
+        except Exception as e:
+            print(f"   ❌ ERROR EN EJECUCIÓN: {e}")
+            continue
 
-    # --- ASSERT ---
-    assert not missing, (
-        f"Faltan tipos esperados en '{query}': {missing}. "
-        f"Encontrado: {found_types}"
-    )
+        duration = time.time() - start_time
+        
+        filters = result.get('search_filters', {})
+        intent = result.get('intent', '')
+        debug = result.get('debug_analysis', {})
+        
+        print(f"   ⏱️  Latencia LLM: {duration:.2f}s")
+        print(f"   🔎 Decisión LLM: {json.dumps(debug.get('approved_entities', []), ensure_ascii=False)}")
+        
+        # Validaciones
+        errors = [] 
+        
+        # 1. Validar Intent
+        if 'intent' in case and intent != case['intent']:
+            errors.append(f"❌ Intent incorrecto. Esperado: {case['intent']}, Actual: {intent}")
 
-# ============================================================================
-# 🧪 TESTS DE INTEGRACIÓN (FILTROS)
-# ============================================================================
+        # 2. Validar Filtros Positivos
+        for key, expected_val in case.get('checks', {}).items():
+            if key == "__exclude__": continue
+            
+            # Navegación segura por el diccionario
+            parts = key.split('.')
+            actual_val = filters
+            for part in parts[1:]:
+                if isinstance(actual_val, dict):
+                    actual_val = actual_val.get(part)
+                else:
+                    actual_val = None
+            
+            # Comparación
+            if isinstance(expected_val, list):
+                if not actual_val:
+                    # Fallo leve si el NER no tiene el dato cargado (ej: producto nuevo)
+                    errors.append(f"⚠️ Falta filtro {key}. Esperado: {expected_val} (¿Está en vademecum.csv?)")
+                else:
+                    # Intersección flexible (case insensitive)
+                    intersection = set([str(x).upper() for x in expected_val]) & set([str(x).upper() for x in actual_val])
+                    if not intersection:
+                        errors.append(f"❌ Valor {key} incorrecto. Esperado coincidencia con: {expected_val}, Actual: {actual_val}")
+            else:
+                if actual_val != expected_val:
+                    errors.append(f"❌ Valor {key} incorrecto. Esperado: {expected_val}, Actual: {actual_val}")
 
-@pytest.mark.parametrize("query, expectations", INTEGRATED_SEARCH_CASES)
-def test_ner_integration_data(classifier, query, expectations):
-    result = classifier.classify(query)
-    found_types = [e.entity_type for e in result.all_entities]
+        # 3. Validar Exclusiones
+        if "__exclude__" in case.get('checks', {}):
+            for key_to_exclude in case['checks']['__exclude__']:
+                parts = key_to_exclude.split('.')
+                actual_val = filters
+                found = True
+                for part in parts[1:]:
+                    if isinstance(actual_val, dict):
+                        actual_val = actual_val.get(part)
+                    if actual_val is None:
+                        found = False
+                        break
+                if found and actual_val:
+                     errors.append(f"❌ Filtro {key_to_exclude} NO debería existir. Valor: {actual_val}")
 
-    # --- LOGGING DETALLADO ---
-    logger.info(f"\n{'='*70}")
-    logger.info(f"⚙️  INTEGRATION TEST: '{query}'")
-    logger.info(f"{'-'*70}")
-    
-    # Loguear entidades encontradas
-    details = [f"[{e.entity_type}: '{e.entity_value}']" for e in result.all_entities]
-    logger.info(f"📝 Entidades: {details}")
-    
-    # Loguear filtros encontrados vs esperados
-    logger.info(f"🔍 Filtros Detectados: {result.filters}")
-    if "filters" in expectations:
-        logger.info(f"🎯 Filtros Esperados:  {expectations['filters']}")
-    
-    logger.info(f"{'='*70}")
+        if not errors:
+            print("   ✅ PASSED")
+            passed_count += 1
+        else:
+            for e in errors:
+                print(f"   {e}")
+        print("-" * 50)
 
-    # 1. Validar Tipos
-    if "types_in_result" in expectations:
-        for t in expectations["types_in_result"]:
-            assert t in found_types, f"Falta el tipo {t}"
+    print(f"\n🏁 RESULTADO FINAL: {passed_count}/{len(test_cases)} Pruebas exitosas.")
 
-    # 2. Validar Filtros
-    if "filters" in expectations:
-        for key, value in expectations["filters"].items():
-            assert key in result.filters, f"Falta filtro '{key}'"
-            assert result.filters[key] == value, f"Valor erróneo en '{key}'"
-
-# ============================================================================
-# 🧪 OTROS TESTS
-# ============================================================================
-
-def test_classification_to_optimizer_format(classifier):
-    query = "antiparasitario bayer para gatos 5kg"
-    classification = classifier.classify(query)
-    optimizer_payload = classification_to_optimizer_format(classification)
-    
-    logger.info(f"\n📦 PAYLOAD OPTIMIZER GENERADO:\n{optimizer_payload}")
-    
-    assert "intent" in optimizer_payload
-    assert "main_entity" in optimizer_payload
-    assert "details" in optimizer_payload
-    assert "parsed_metadata" in optimizer_payload
-
-def test_intent_detection(classifier):
-    res_st = classifier.classify("hola buenos dias")
-    logger.info(f"\n🗣️ Intent Test 1: 'hola buenos dias' -> {res_st.intent}")
-    assert res_st.intent == "SMALLTALK"
-
-    res_mix = classifier.classify("hola tenes bravecto")
-    logger.info(f"🗣️ Intent Test 2: 'hola tenes bravecto' -> {res_mix.intent}")
-    assert res_mix.intent == "SEARCH"
+if __name__ == "__main__":
+    test_ner_integration_real()

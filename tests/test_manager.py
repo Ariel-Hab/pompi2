@@ -15,13 +15,11 @@ class Colors:
     ENDC = '\033[0m'
     BOLD = '\033[1m'
 
-@pytest.fixture(scope="function")  # CAMBIADO: function en lugar de module
+@pytest.fixture(scope="function")
 def manager(request):
     """
     Inicializa el Manager en Modo Test para cada test individual.
-    Usa el query como parte del session_id para evitar colisiones.
     """
-    # Obtenemos el parámetro del test actual si existe
     query = getattr(request, 'param', 'default_test')
     session_id = f"test_session_{hash(query)}"
     
@@ -31,39 +29,48 @@ def manager(request):
         session_id=session_id, 
         user_id="tester_01"
     )
-    mgr.test_mode = True  # Habilitamos la captura de datos internos
-    
+    mgr.test_mode = True
     return mgr
 
 
 @pytest.mark.parametrize("query, expected_intent, expected_context_type", [
     
-    # --- ESCENARIO 1: FILTRO POR LABORATORIO Y CATEGORÍA ---
+    # --- ESCENARIOS ORIGINALES ---
     ("Busco productos de laboratorio CEVA que sean de la línea clínica", "SEARCH", "product"),
-    
-    # --- ESCENARIO 2: RESTRICCIÓN POR ESPECIE (PROTECCIÓN) ---
     ("¿Puedo usar Duosecretina en mi gato para problemas hepáticos?", "RECOMMENDATION", "product"),
-    
-    # --- ESCENARIO 3: BÚSQUEDA POR COMPONENTE (DROGA) ---
     ("Necesito algo que tenga Gabapentina para un perro con dolor neuropático", "SEARCH", "product"),
-    
-    # --- ESCENARIO 4: DOSIFICACIÓN BASADA EN PESO ---
     ("¿Cuántos comprimidos de Duosecretina le doy a un perro de 20kg?", "RECOMMENDATION", "product"),
-    
-    # --- ESCENARIO 5: DIFERENCIACIÓN DE PRESENTACIONES (PESO ESPECÍFICO) ---
     ("Tengo un perro de 15kg con pulgas, ¿cuál de los Zanex le corresponde?", "SEARCH", "product"),
-    
-    # --- ESCENARIO 6: BÚSQUEDA POR ACCIÓN TERAPÉUTICA ---
     ("¿Tienen algún anticonceptivo inyectable para perras?", "SEARCH", "product"),
-    
-    # --- ESCENARIO 7: INDICACIONES CLÍNICAS ESPECÍFICAS ---
     ("¿Qué me recomiendas para un perro con signos de osteoartritis?", "RECOMMENDATION", "product"),
-    
-    # --- ESCENARIO 8: COMPLIANCE Y SEGURIDAD ---
     ("¿Qué contraindicaciones tiene el Neo Vitapel de Brouwer?", "SEARCH", "product"),
+    ("Busco el alimento de Holliday para problemas cardíacos de 10kg", "SEARCH", "product"),
+
+    # --- NUEVOS ESCENARIOS BASADOS EN EMBEDDINGS CARGADOS ---
+
+    # 1. NUEVO LANZAMIENTO (Pregabaliv - John Martin)
+    # Prueba detección de "nuevo producto" y droga específica
+    ("Quiero información sobre el nuevo analgésico de John Martin con Pregabalina", "SEARCH", "product"),
+
+    # 2. OFERTA ESPECÍFICA CON REGALO (Labyderm - Labyes)
+    # Prueba búsqueda de promociones complejas (regalo/riñonera)
+    ("Busco la oferta de Labyderm que viene con una riñonera de regalo", "SEARCH", "offer"),
+
+    # 3. TRANSFER / BONIFICACIÓN (Holliday)
+    # Prueba búsqueda de reglas de transfer comerciales
+    ("¿Qué promociones vigentes o transfers tiene el laboratorio Holliday?", "SEARCH", "transfer"),
+
+    # 4. BÚSQUEDA POR PESO Y ESPECIE (Credelio - Elanco)
+    # Prueba filtro preciso de peso (2.5kg) y especie
+    ("Necesito una pastilla para pulgas para un perro muy chiquito de 2.5kg", "RECOMMENDATION", "product"),
+
+    # 5. PREGUNTA TÉCNICA/CLÍNICA (Pets Protector - Ceva)
+    # Prueba recuperación de info técnica (droga/acción)
+    ("¿Qué droga tiene el Pets Protector Max y para qué sirve?", "SEARCH", "product"),
     
-    # --- ESCENARIO 9: PRODUCTOS DE ALIMENTACIÓN ESPECÍFICA ---
-    ("Busco el alimento de Holliday para problemas cardíacos de 10kg", "SEARCH", "product")
+    # 6. TRANSFER ESPECÍFICO (Konig)
+    # Prueba búsqueda directa de un transfer por nombre comercial
+    ("Mostrame el transfer de Dominal Max", "SEARCH", "transfer")
 ])
 def test_manager_pipeline_visual(query, expected_intent, expected_context_type):
     """
@@ -99,7 +106,6 @@ def test_manager_pipeline_visual(query, expected_intent, expected_context_type):
     print(f"\n🎯 {Colors.BOLD}[PASO 1] NER & CLASIFICACIÓN{Colors.ENDC}")
     print(f"   Intent Detectado: {Colors.BLUE}{debug_data.ner_intent}{Colors.ENDC}")
     print(f"   Entidad Principal: {debug_data.ner_primary_entity} ({debug_data.ner_entity_type})")
-    print(f"   Todas las Entidades: {debug_data.ner_all_entities}")
     print(f"   Filtros Aplicados: {debug_data.ner_filters}")
     
     if debug_data.ner_intent != expected_intent and expected_intent != "SMALLTALK":
@@ -109,7 +115,6 @@ def test_manager_pipeline_visual(query, expected_intent, expected_context_type):
     if not debug_data.has_results and expected_context_type:
         print(f"\n❌ {Colors.FAIL}FAIL: No se encontraron resultados en el Vector Search.{Colors.ENDC}")
         print(f"   Query Optimizada: {debug_data.optimized_query}")
-        # No retornamos, continuamos para ver la respuesta del LLM
     
     # 6. Visualización ENRIQUECIMIENTO (Lo que ve el LLM)
     if debug_data.search_results:
@@ -123,7 +128,7 @@ def test_manager_pipeline_visual(query, expected_intent, expected_context_type):
             
             print(f"\n   🔎 {Colors.BOLD}Candidato #{idx}:{Colors.ENDC}")
             
-            # Nombre del producto
+            # Nombre del producto/oferta/transfer
             nombre = (
                 top_candidate.get('PRODUCTO') or 
                 top_candidate.get('product_name') or 
@@ -134,11 +139,13 @@ def test_manager_pipeline_visual(query, expected_intent, expected_context_type):
             lab = (
                 top_candidate.get('LABORATORIO') or
                 top_candidate.get('laboratorio') or 
+                top_candidate.get('supplier') or 
                 top_candidate.get('enterprise_title', 'N/A')
             )
             
             print(f"      Nombre: {Colors.CYAN}{nombre}{Colors.ENDC}")
             print(f"      Laboratorio: {lab}")
+            print(f"      Tipo: {top_candidate.get('type', 'unknown')}")
             
             # Scores
             print(f"      📊 Scores: Total={scores.get('total', 0):.4f} | "
@@ -146,35 +153,11 @@ def test_manager_pipeline_visual(query, expected_intent, expected_context_type):
                   f"Key={scores.get('keyword', 0):.2f} | "
                   f"NER={scores.get('ner', 0):.2f}")
             
-            # Datos específicos según tipo
-            if expected_context_type == 'product':
-                # Información clínica
-                accion = (
-                    top_candidate.get('ACCION TERAPEUTICA') or 
-                    top_candidate.get('therapeutic_action') or
-                    top_candidate.get('description', '')
-                )
-                
-                droga = (
-                    top_candidate.get('DROGA') or
-                    top_candidate.get('active_ingredient', '')
-                )
-                
-                presentacion = (
-                    top_candidate.get('CONCEPTO') or
-                    top_candidate.get('presentacion', '')
-                )
-                
-                if accion:
-                    print(f"      Acción Terapéutica: {Colors.GREEN}{accion[:80]}...{Colors.ENDC}")
-                if droga:
-                    print(f"      Principio Activo: {droga}")
-                if presentacion:
-                    print(f"      Presentación: {presentacion}")
-                    
-            elif expected_context_type == 'offer':
-                desc = top_candidate.get('description', 'N/A')
-                print(f"      Descripción: {Colors.CYAN}{desc[:80]}...{Colors.ENDC}")
+            # Datos específicos para debugging visual
+            desc = top_candidate.get('description', '')
+            if desc:
+                 print(f"      Desc: {desc[:100]}...")
+
     else:
         print(f"\n{Colors.WARNING}⚠️  No se recuperaron candidatos del Vector Search{Colors.ENDC}")
 
@@ -184,71 +167,71 @@ def test_manager_pipeline_visual(query, expected_intent, expected_context_type):
     print(debug_data.final_response.strip())
     print(f"{Colors.BLUE}{'-'*80}{Colors.ENDC}")
 
-    # 8. Visualización ATTACHMENTS (Lo que ve el Frontend)
-    attachments = response.get('attachments', [])
-    print(f"\n📦 {Colors.BOLD}[PASO 4] ATTACHMENTS FRONTEND (Tarjetas){Colors.ENDC}")
-    
-    if attachments:
-        print(f"   Se generaron {len(attachments)} tarjetas visuales.")
-        
-        for idx, att in enumerate(attachments[:3], 1):
-            att_data = att.get('data', {})
-            
-            print(f"\n   🔎 {Colors.BOLD}Tarjeta #{idx}:{Colors.ENDC}")
-            print(f"      Título: {att_data.get('title', 'N/A')}")
-            
-            # Verificamos datos comerciales si aplica
-            if expected_context_type == 'product':
-                price = att_data.get('selling_price', att_data.get('list_price', 'N/A'))
-                has_offer = att_data.get('has_offer', False)
-                
-                print(f"      Precio: {Colors.GREEN}${price}{Colors.ENDC}")
-                print(f"      En Oferta: {has_offer}")
-                
-            elif expected_context_type == 'offer':
-                discount = att_data.get('cash_discount_percentaje', 'N/A')
-                print(f"      Descuento: {Colors.GREEN}{discount}%{Colors.ENDC}")
-    else:
-        if expected_context_type:
-            print(f"   {Colors.WARNING}⚠️  Sin attachments (¿Es correcto para esta query?){Colors.ENDC}")
-        else:
-            print(f"   ✓ (Correcto: Esta query no requiere attachments)")
-
-    # 9. VEREDICTO VISUAL
+    # 8. VEREDICTO VISUAL
     print(f"\n{'='*100}")
-    
-    # Assertions opcionales (puedes comentarlas si solo quieres ver el output)
     assert debug_data.ner_intent is not None, "Intent no fue detectado"
     assert debug_data.final_response is not None, "No se generó respuesta"
-    
     print(f"✅ {Colors.GREEN}{Colors.BOLD}TEST COMPLETADO{Colors.ENDC}")
     print(f"{'='*100}\n")
 
 
-# Test adicional para verificar el flujo sin parametrización
-def test_single_query_debug():
-    """Test individual para debugging detallado"""
+def test_conversation_multiturn():
+    """
+    Test de Conversación (Memoria y Contexto).
+    Simula un flujo de 3 mensajes para verificar que el bot mantiene el contexto
+    (ej: recuerda que hablamos de un perro de cierto peso).
+    """
+    print(f"\n\n{Colors.HEADER}🗣️  TEST DE CONVERSACIÓN MULTI-TURN (MEMORIA){Colors.ENDC}")
     
-    query = "Busco productos de laboratorio CEVA"
-    
-    print(f"\n{Colors.HEADER}🔬 DEBUG TEST: '{query}'{Colors.ENDC}")
-    
-    manager = ConversationManager(
-        session_id="debug_session",
-        user_id="debug_user"
-    )
+    # Usamos un session_id fijo para simular la misma sesión
+    session_id = "test_conversation_session_001"
+    manager = ConversationManager(session_id=session_id, user_id="tester_conv")
     manager.test_mode = True
+
+    # --- TURNO 1: Búsqueda General ---
+    q1 = "Hola, busco antiparasitarios para perros"
+    print(f"\n{Colors.BOLD}👤 Usuario (1):{Colors.ENDC} {q1}")
     
-    print(f"{Colors.CYAN}Test mode activado: {manager.test_mode}{Colors.ENDC}")
+    resp1 = manager.handle_message(q1, generate_response=True)
+    print(f"{Colors.BLUE}🤖 Bot (1):{Colors.ENDC} {manager.last_test_result.final_response[:150]}...")
     
-    response = manager.handle_message(query, generate_response=True)
+    # Verificamos que entendió la categoría
+    assert "antiparasitario" in str(manager.last_test_result.ner_filters).lower() or \
+           "antiparasitario" in str(manager.last_test_result.ner_primary_entity).lower()
+
+    # --- TURNO 2: Refinamiento por Peso (Contexto) ---
+    q2 = "Es para uno chiquito, de 2 kilos"
+    print(f"\n{Colors.BOLD}👤 Usuario (2):{Colors.ENDC} {q2}")
     
-    print(f"{Colors.CYAN}Respuesta recibida: {response is not None}{Colors.ENDC}")
-    print(f"{Colors.CYAN}Last test result: {manager.last_test_result is not None}{Colors.ENDC}")
+    resp2 = manager.handle_message(q2, generate_response=True)
+    print(f"{Colors.BLUE}🤖 Bot (2):{Colors.ENDC} {manager.last_test_result.final_response[:150]}...")
     
-    if manager.last_test_result:
-        manager.last_test_result.print_summary()
+    # Debería haber encontrado productos como CREDELIO o PETS PROTECTOR MAX (rango bajo)
+    results_t2 = manager.last_test_result.search_results
+    found_relevant = False
+    for res in results_t2:
+        name = res['metadata'].get('title', '').upper()
+        # Verificamos si trajo Credelio o Pets Protector que son para < 2.5/5kg
+        if "CREDELIO" in name or "PETS PROTECTOR" in name:
+            found_relevant = True
+            print(f"   ✅ Contexto aplicado, encontró: {name}")
+            break
+    
+    if not found_relevant:
+        print(f"   {Colors.WARNING}⚠️  Advertencia: No parece haber filtrado por peso en el Turno 2{Colors.ENDC}")
+
+    # --- TURNO 3: Pregunta Específica sobre resultado previo ---
+    q3 = "¿Qué droga tiene el Credelio?"
+    print(f"\n{Colors.BOLD}👤 Usuario (3):{Colors.ENDC} {q3}")
+    
+    resp3 = manager.handle_message(q3, generate_response=True)
+    print(f"{Colors.BLUE}🤖 Bot (3):{Colors.ENDC} {manager.last_test_result.final_response}")
+
+    # Verificamos que responda sobre Lotilaner
+    response_text = manager.last_test_result.final_response.lower()
+    if "lotilaner" in response_text:
+        print(f"   ✅ Respuesta correcta (Menciona Lotilaner)")
     else:
-        print(f"{Colors.FAIL}❌ NO SE GUARDÓ EL TEST RESULT{Colors.ENDC}")
-        print(f"   Verificar que _save_test_result se está llamando")
-        print(f"   Response keys: {response.keys()}")
+        print(f"   {Colors.FAIL}❌ Respuesta incorrecta (No menciona Lotilaner){Colors.ENDC}")
+
+    print(f"\n{Colors.GREEN}✅ TEST DE CONVERSACIÓN FINALIZADO{Colors.ENDC}")
